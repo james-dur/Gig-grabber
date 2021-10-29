@@ -1,0 +1,312 @@
+#! /usr/bin/python3
+import PySimpleGUI as sg
+import requests
+import csv
+from bs4 import BeautifulSoup
+from requests.models import Response
+import re 
+import inspect
+from PIL import Image, ImageTk, ImageSequence
+
+sg.theme('DarkBlack1') #add a touch of color
+records = []
+header_list = ["Job", "Company", "Location", "Salary", "Date Posted", "Description", "Link"]
+loading_gif = '/home/kali/Downloads/loadingspider.gif'
+ggheader = '/home/kali/Downloads/ggheader.png'
+
+
+#all of the stuff inside your windows
+layout1 = [ [sg.Column([[sg.Image(ggheader)]], pad=(0,0))],
+            [sg.Text('What job boards do you want to search?', font=("Helvetica", 17))],
+            [sg.Radio('All', 1, font=("Helvetica", 15), enable_events=True, key='R1', default=True),
+            sg.Radio('LinkedIn', 1, font=("Helvetica", 15), enable_events=True, key='R2'),
+            sg.Radio('Indeed', 1, font=("Helvetica", 15), enable_events=True, key='R3')],
+            [sg.Text('What job are you looking for today?', font=("Helvetica", 20))],
+            [sg.Text('Position:', font=("Helvetica", 20)), sg.InputText(key='input_position', font=("Helvetica", 20))],
+            [sg.Text('Location:', font=("Helvetica", 20)), sg.InputText(key='input_location', font=("Helvetica", 20))],
+            [sg.Button('Search', font=("Helvetica", 20), key='search_button'), sg.Button('Exit', font=("Helvetica", 20))]   ]
+
+layout2 = [ [sg.Column([[sg.Image(ggheader)]], pad=(0,0))],
+            [sg.Text('Crawling sites for job info...', font=("Helvetica", 20))],
+            [sg.Image(loading_gif, key='loading_gif')],   ]
+
+window1 = sg.Window('Gig Grabber', layout1, element_justification='c', size=(1300,600), finalize=True)
+sequence = [ImageTk.PhotoImage(img) for img in ImageSequence.Iterator(Image.open(loading_gif))]
+interframe_duration = Image.open(loading_gif).info['duration']
+
+#event loop to process "events" and get the "values" of the inputs
+while True:
+    event, values = window1.read()
+    if event == sg.WIN_CLOSED or event == 'Exit': # if user closes window or clicks 'Exit'
+        break
+    if event == 'search_button' and 'R2':
+        position = values['input_position']
+        location = values['input_location']
+        window1.close()
+        if event == sg.WIN_CLOSED:
+            break
+        window2 = sg.Window('Gig Grabber', layout2, margins=(0,0), element_padding=(0,0), element_justification='c', finalize=True)
+        while True:
+            for frame in sequence:
+                event, values = window2.read(timeout=interframe_duration)
+                if event == sg.WIN_CLOSED:
+                    break
+                window2['loading_gif'].update(data=frame)
+            #parse through LinkedIn for job postings
+            #get user input to search through linkedin
+            def getHTMLdocument(url):
+                response = requests.get(url)
+                return response.text
+            url_template = "https://www.linkedin.com/jobs/search?keywords={}&location={}&geold=&trk=homepage-jobseeker_jobs-search-bar_search-submit&position=1&pageNum=0"
+            url_to_scrape = url_template.format(position, location)
+
+            #create document
+            html_document = getHTMLdocument(url_to_scrape)
+            #create soup object
+            soup = BeautifulSoup(html_document, 'html.parser')
+
+            links = []
+
+            #get the links
+            for link in soup.find_all(class_='base-card__full-link',
+                attrs={'href': re.compile("^https://")}):
+                links.append(link.get('href'))
+                job_links = "Apply Here: " + link.get('href')
+
+            #parse through the links for the info we need
+            for link in links:
+                html_document = getHTMLdocument(link)
+                soup = BeautifulSoup(html_document, 'html.parser')
+
+                #get the title, company, location, and date of job
+                for info in soup.find_all(class_='top-card-layout__card'):
+                    job_title = info.find("h1").text
+
+                    company_name = info.find("span","topcard__flavor").text.replace('\n', '') # issue with indentations
+                    company_name = inspect.cleandoc(company_name)
+                    company_location = info.find("span","topcard__flavor--bullet").text.replace('\n', '') # issue with indentation
+                    company_location = inspect.cleandoc(company_location)
+                    job_date = info.find("span","posted-time-ago__text").text.replace('\n', '') # issue with indentation
+                    job_date = inspect.cleandoc(job_date)
+
+                #get job description
+                for info in soup.find_all(class_='decorated-job-posting__details'):
+
+                    job_descrip = info.find("div","show-more-less-html__markup").text.replace('\n', ' ')
+                    job_descrip = inspect.cleandoc(job_descrip)
+
+                    #salary may not always be present
+                    salary = info.find("div", "salary")
+                    if salary:
+                        job_pay = salary.text.replace('\n', '')
+                        job_pay = inspect.cleandoc(job_pay)
+                    else:
+                        job_pay = ""
+
+                    record = [job_title, company_name, company_location, job_pay, job_date, job_descrip, job_links]
+                    records.append(record)
+        
+            layout3 = [ [sg.Table(values=records, key='-OUTPUT-', enable_events=True, headings=header_list, display_row_numbers=True, auto_size_columns=True, num_rows=len(records), selected_row_colors='purple on yellow', expand_x=True, expand_y=True, enable_click_events=True)]   ]
+            window2.close()
+            window3 = sg.Window('Gig Grabber', layout3, margins=(0,0), element_padding=(0,0), element_justification='c', finalize=True)
+            while True:
+                event, values = window3.read()
+                if event == sg.WIN_CLOSED:
+                    break
+
+            with open(f"{position + location}.csv", "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Job Title", "Company", "Location", "Pay", "Posted", "Description", "Apply Here"])
+                writer.writerows(records)
+
+    if (event == 'search_button') and (event == 'R3'):
+        window1.close()
+        if event == sg.WIN_CLOSED:
+            break
+        window2 = sg.Window('Gig Grabber', layout2, margins=(0,0), element_padding=(0,0), element_justification='c', finalize=True)
+        while True:
+            for frame in sequence:
+                event, values = window2.read(timeout=interframe_duration)
+                if event == sg.WIN_CLOSED:
+                    break
+                window2['loading_gif'].update(data=frame)
+
+            #function to create the url of the site
+            def get_url(position, location):
+                url_template = "https://www.indeed.com/jobs?q={}&l={}"
+                url = url_template.format(position, location)
+                return url
+
+            #function to pull the different pieces of job data from the different listings
+            def record_collector(slider):
+
+                job_title = slider.find("h2", "jobTitle", "title").text.strip()
+                company_name = slider.find("span", "companyName").text.strip()
+                company_location = slider.find("div", "companyLocation").text.strip()
+                job_descrip = slider.find("div", "job-snippet").text.strip()
+                job_date = slider.find("span", "date").text.strip()
+
+            #since every job does show the salary, we need a conditional
+                job_pay = slider.find("class", "salary-snippet")
+                if job_pay:
+                    salary = job_pay.text
+                else:
+                    salary = ""
+                record = ( job_title, company_name, company_location, salary, job_date, job_descrip)
+                return record
+
+            #main function to run everything
+            def main(position, location):
+                records = []
+                position = get_position(position)
+                location = get_location(location)
+                url = get_url(position, location)
+
+                #while statement that allows the files
+                while True:
+
+                    page = requests.get(url)
+
+                    whole_page = BeautifulSoup(page.text, "html.parser")
+
+                    sliders = whole_page.find_all("div", "slider_item")
+                    #goes through each slider and collects the necessary info
+                    for slider in sliders:
+                        record = record_collector(slider)
+                        records.append(record)
+                
+                    #num = 10
+                    #To continue to the next page
+                    try:
+                        #url = f"https://www.indeed.com/jobsq={Location}&start={num}"
+                        url = "https://www.indeed.com" + whole_page.find("a", {"aria-label": "Next"}).get("href")
+                    except AttributeError:
+                        break
+                layout4 = [ [sg.Table(values=records, key='-OUTPUT-', enable_events=True, headings=header_list, display_row_numbers=True, auto_size_columns=True, num_rows=len(records), selected_row_colors='purple on yellow', expand_x=True, expand_y=True, enable_click_events=True)]   ]
+                window2.close()
+                window4 = sg.Window('Gig Grabber', layout4, margins=(0,0), element_padding=(0,0), element_justification='c', finalize=True)
+                while True:
+                    event, values = window4.read()
+                    if event == sg.WIN_CLOSED:
+                        break
+
+            with open(f"{position + location}.csv", "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Job Title", "Company", "Location", "Pay", "Posted", "Description", "Apply Here"])
+                writer.writerows(records)
+
+            main("", "")
+
+    if (event == 'search_button') and (event == 'R1'):
+        window1.close()
+        if event == sg.WIN_CLOSED:
+            break
+        window2 = sg.Window('Gig Grabber', layout2, margins=(0,0), element_padding=(0,0), element_justification='c', finalize=True)
+        while True:
+            for frame in sequence:
+                event, values = window2.read(timeout=interframe_duration)
+                if event == sg.WIN_CLOSED:
+                    break
+                window2['loading_gif'].update(data=frame)
+            #parse through LinkedIn AND indeed for job postings
+            #get user input to search through linkedin
+            def getHTMLdocument(url):
+                response = requests.get(url)
+                return response.text
+            url_templateA = "https://www.linkedin.com/jobs/search?keywords={}&location={}&geold=&trk=homepage-jobseeker_jobs-search-bar_search-submit&position=1&pageNum=0"
+            url_to_scrapeA = url_templateA.format(position, location)
+
+            url_templateB = "https://www.indeed.com/jobs?q={}&l={}"
+            url_to_scrapeB = url_templateB.format(position, location)
+
+            #create document
+            html_documentA = getHTMLdocument(url_to_scrapeA)
+            html_documentB = getHTMLdocument(url_to_scrapeB)
+            #create soup object
+            soupA = BeautifulSoup(html_documentA, 'html.parser')
+            soupB = BeautifulSoup(html_documentB, 'html.parser')
+
+            links = []
+            records = []
+
+            #get the links (for linkedin)
+            for link in soupA.find_all(class_='base-card__full-link',
+                attrs={'href': re.compile("^https://")}):
+                links.append(link.get('href'))
+                job_links = "Apply Here: " + link.get('href')
+
+            #parse through the links for the info we need
+            for link in links:
+                html_documentA = getHTMLdocument(link)
+                soupA = BeautifulSoup(html_documentA, 'html.parser')
+
+                #get the title, company, location, and date of job
+                for info in soupA.find_all(class_='top-card-layout__card'):
+                    job_title = info.find("h1").text
+
+                    company_name = info.find("span","topcard__flavor").text.replace('\n', '') # issue with indentations
+                    company_location = info.find("span","topcard__flavor--bullet").text.replace('\n', '') # issue with indentation
+                    job_date = info.find("span","posted-time-ago__text").text.replace('\n', '') # issue with indentation
+
+                #get job description
+                for info in soupA.find_all(class_='decorated-job-posting__details'):
+
+                    job_descrip = info.find("div","show-more-less-html__markup").text.replace('\n', ' ')
+
+                    #salary may not always be present
+                    salary = info.find("div", "salary")
+                    if salary:
+                        job_pay = salary.text.replace('\n', '')
+                    else:
+                        job_pay = ""
+                    
+                    record = ( job_title, company_name, company_location, salary, job_date, job_descrip, job_links)
+                    records.append(record)
+        
+            for slider in soupB.find_all("div", "slider_item"):
+            
+                job_title = slider.find("h2", "jobTitle", "title").text.strip()
+                company_name = slider.find("span", "companyName").text.strip()
+                company_location = slider.find("div", "companyLocation").text.strip()
+                job_descrip = slider.find("div", "job-snippet").text.strip()
+                job_date = slider.find("span", "date").text.strip()
+
+                #since every job does not show the salary, we need a conditional
+                job_pay = slider.find("class", "salary-snippet")
+                if job_pay:
+                    salary = job_pay.text
+                else:
+                    salary = ""
+                try:
+                    #url = f"https://www.indeed.com/jobsq={Location}&start={num}"
+                    url = "https://www.indeed.com" + soupB.find("a", {"aria-label": "Next"}).get("href")
+                except AttributeError:
+                    break
+
+                record = ( job_title, company_name, company_location, salary, job_date, job_descrip, job_links)
+                records.append(record)
+
+                layout5 = [ [sg.Table(values=records, key='-OUTPUT-', enable_events=True, headings=header_list, display_row_numbers=True, auto_size_columns=True, num_rows=len(records), selected_row_colors='purple on yellow', expand_x=True, expand_y=True, enable_click_events=True)]   ]
+                window2.close()
+                window5 = sg.Window('Gig Grabber', layout5, margins=(0,0), element_padding=(0,0), element_justification='c', finalize=True)
+                while True:
+                    event, values = window.read()
+                    if event == sg.WIN_CLOSED:
+                        break
+
+            #num = 10
+            #To continue to the next page
+            try:
+                #url = f"https://www.indeed.com/jobsq={Location}&start={num}"
+                url = "https://www.indeed.com" + soupB.find("a", {"aria-label": "Next"}).get("href")
+            except AttributeError:
+                break
+
+            with open(f"{position + location}.csv", "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Job Title", "Company", "Location", "Pay", "Posted", "Description", "Apply Here"])
+                writer.writerows(records)
+
+window3.close()
+window4.close()
+window5.close()
